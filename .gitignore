@@ -1,1 +1,4 @@
 *.jpg
+/venv/
+__pycache__
+parameters.json
