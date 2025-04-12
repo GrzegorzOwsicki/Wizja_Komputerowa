@@ -5,6 +5,11 @@ import json
 class Parameters:
     def __init__(self):
         # Uwydatnianie obrazu
+        self.blur_gauss_size = 1
+        self.blur_gauss_sigma = 0.5
+        self.blur_median_size = 1
+        self.hist_s = False
+        self.hist_v = False
 
         # Kolor skóry
         self.hue_min = 0
@@ -13,11 +18,13 @@ class Parameters:
         self.saturation_max = 255
         self.value_min = 0
         self.value_max = 255
+        self.erode_dilate_size = 3
+        self.erode_dilate_iter = 0
 
         # Filtracja wyników
-        self.area_min = 300
-        self.aspect_ratio_min = 0.5
-        self.aspect_ratio_max = 2
+        self.area_min = 2000
+        self.aspect_ratio_min = 0.4
+        self.aspect_ratio_max = 1
         self.circularity_min = 0.75
 
 class DisplayParams:
@@ -33,6 +40,7 @@ class DisplayParams:
         self.ellipses = False
         self.ellipse_color = (255,0,0)
         self.ellipse_thick = 3
+        self.mask_enhanced = True
 
 class Detector:
     def __init__(self):
@@ -57,7 +65,13 @@ class Detector:
         p = self.params
 
         # Uwydatnianie obrazu
-        image_hsv = cv2.cvtColor(self.image, cv2.COLOR_BGR2HSV)
+        image_blur_gauss = self.imageBlurGauss(self.image)
+        image_blur_median = self.imageBlurMedian(image_blur_gauss)
+        image_equalized = self.imageEqualize(image_blur_median)
+
+        image_enhanced = image_equalized
+        image_hsv = cv2.cvtColor(image_enhanced, cv2.COLOR_BGR2HSV)
+        
 
         # Maskowanie koloru skóry
         def get_ranges(min_val, max_val, max_range):
@@ -84,29 +98,51 @@ class Detector:
                         mask = temp_mask
                     else:
                         mask = cv2.bitwise_or(mask, temp_mask)
-        skin = cv2.bitwise_and(self.image, self.image, mask=mask)
+
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (p.erode_dilate_size, p.erode_dilate_size))
+        maskErodeDilate = mask.copy()
+        if p.erode_dilate_iter < 0: # Erode
+            maskErodeDilate = cv2.erode(maskErodeDilate, kernel, iterations=p.erode_dilate_iter*-1)
+        elif p.erode_dilate_iter > 0: # Dilate
+            maskErodeDilate = cv2.dilate(maskErodeDilate, kernel, iterations=p.erode_dilate_iter)
+
+                
+        image_to_mask = image_enhanced if self.display.mask_enhanced else self.image
+        skin = cv2.bitwise_and(image_to_mask, image_to_mask, mask=maskErodeDilate)
 
         # Detekcja konturów
-        contours, hierarchy = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours, hierarchy = cv2.findContours(maskErodeDilate, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         contours = list(contours)
 
         def get_contours_mask_skin(contours):
             newMask = np.zeros_like(mask, dtype=np.uint8)
             cv2.drawContours(newMask, contours, -1, 255, thickness=cv2.FILLED)
-            newSkin = cv2.bitwise_and(self.image, self.image, mask=newMask)
+            newSkin = cv2.bitwise_and(image_to_mask, image_to_mask, mask=newMask)
             return newMask, newSkin
 
         # Filtracja Wyników
         contours = list(filter(self.filterCanFitElipse, contours))
         contours = list(filter(self.filterArea, contours))
-        mask1, skin1 = get_contours_mask_skin(contours)
+        maskFilterArea, skinFilterArea = get_contours_mask_skin(contours)
         contours = list(filter(self.filterAspectRatio, contours))
-        mask2, skin2 = get_contours_mask_skin(contours)
+        maskFilterAspectRatio, skinFilterAspectRatio = get_contours_mask_skin(contours)
         contours = [cnt for cnt in contours if self.filterCircularity(cnt, mask)] # To samo tylko zapisane inaczej aby dodać dodatkowy parametr mask
-        mask3, skin3 = get_contours_mask_skin(contours)
+        maskFilterCircularity, skinFilterCircularity = get_contours_mask_skin(contours)
 
         # Wyświetlanie wyniku
-        self.displayResult(contours, [self.image, mask, skin, skin1, skin2, skin3])
+        self.displayResult(contours, 
+            [
+                self.image,
+                image_blur_gauss, 
+                image_blur_median,
+                image_equalized,
+                mask, 
+                maskErodeDilate,
+                skin, 
+                skinFilterArea, 
+                skinFilterAspectRatio, 
+                skinFilterCircularity
+            ])
 
         return contours
 
@@ -133,6 +169,32 @@ class Detector:
         
         cv2.namedWindow("Detekcja Twarzy", cv2.WINDOW_KEEPRATIO)
         cv2.imshow("Detekcja Twarzy", display)
+
+    def imageBlurGauss(self, image):
+        p = self.params
+        if p.blur_gauss_size < 2:
+            return image
+        if p.blur_gauss_size % 2 == 0:
+            p.blur_gauss_size += 1
+        return cv2.GaussianBlur(image, (p.blur_gauss_size, p.blur_gauss_size), p.blur_gauss_sigma)
+    
+    def imageBlurMedian(self, image):
+        p = self.params
+        if p.blur_median_size < 2:
+            return image
+        if p.blur_median_size % 2 == 0:
+            p.blur_median_size += 1
+        return cv2.medianBlur(image, p.blur_median_size)
+
+    def imageEqualize(self, image):
+        p = self.params
+        image_hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        h, s, v = cv2.split(image_hsv)
+        s_eq = cv2.equalizeHist(s) if p.hist_s else s
+        v_eq = cv2.equalizeHist(v) if p.hist_v else v
+        image_hsv = cv2.merge((h, s_eq, v_eq))
+        image_bgr = cv2.cvtColor(image_hsv, cv2.COLOR_HSV2BGR)
+        return image_bgr
 
     def filterCanFitElipse(self, contour):
         return len(contour) >= 5 # cv2.fitEllipse wymaga minimum 5 punktów w konturze
