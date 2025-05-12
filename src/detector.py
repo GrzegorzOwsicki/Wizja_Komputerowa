@@ -32,6 +32,8 @@ class Parameters:
         self.value_max = 255
         self.erode_dilate_size = 3
         self.erode_dilate_iter = 0
+        self.YCrBr_lower = (0, 133, 77)
+        self.YCrBr_upper = (255, 173, 127)
 
         # Filtracja wyników
         self.area_min = 0.1
@@ -94,10 +96,11 @@ class Detector:
 
         image_enhanced = image_blur_median
         image_hsv = cv2.cvtColor(image_enhanced, cv2.COLOR_BGR2HSV)
+        image_YCrBr = cv2.cvtColor(image_enhanced,cv2.COLOR_BGR2YCR_CB)
 
         # Maskowanie
         mask_adaptiveThreshold = self.maskAdaptiveThreshold(image_hsv)
-        mask_skinColor = self.maskSkinColor(image_hsv)
+        mask_skinColor = self.maskSkinColor(image_hsv,image_YCrBr)
         mask = cv2.bitwise_and(mask_skinColor, mask_adaptiveThreshold)
      
         display_image = image_enhanced if self.display.mask_enhanced else self.image
@@ -186,7 +189,7 @@ class Detector:
         return maskErodeDilate
         
 
-    def maskSkinColor(self, image_hsv):
+    def maskSkinColor(self, image_hsv, image_YCrBr):
         p = self.params
         def get_ranges(min_val, max_val, max_range):
             if min_val <= max_val:
@@ -212,6 +215,11 @@ class Detector:
                         mask = temp_mask
                     else:
                         mask = cv2.bitwise_or(mask, temp_mask)
+        
+        
+        # porównanie z maaską YCrBr
+        mask2 = cv2.inRange(image_YCrBr,p.YCrBr_lower,p.YCrBr_upper)
+        mask = cv2.bitwise_and(mask,mask2)
 
         # Erozja - Dylatacja
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (p.erode_dilate_size, p.erode_dilate_size))
